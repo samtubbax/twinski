@@ -46,3 +46,66 @@ default_run_options[:pty] = true
 
 # your computer must be running ssh-agent for the git checkout to work from the server to the git server
 set :ssh_options, { :forward_agent => true }
+
+begin
+	# Deployment process
+	namespace :deploy do
+		desc 'Prepares the servers for deployment.'
+		task :setup, :except => { :no_release => true } do
+			# this method is overwritten because our application isn't a Rails-application
+
+			# define folders to create
+			dirs = [deploy_to, releases_path, shared_path]
+
+			# add folder that aren't standard
+			dirs += shared_children.map { |d| File.join(shared_path, d) }
+
+			# create the dirs
+			run %{
+				#{try_sudo} mkdir -p #{dirs.join(' ')} &&
+				#{try_sudo} chmod g+w #{dirs.join(' ')}
+			}
+		end
+
+		task :finalize_update, :except => { :no_release => true } do
+			# our application isn't a Rails-application so don't do Rails specific stuff
+			run 'chmod -R g+w #{latest_release}' if fetch(:group_writable, true)
+		end
+
+		# overrule restart
+		task :restart do; end
+	end
+
+	# define some extra folder to create
+	set :shared_children, %w(app files)
+
+	# custom events configuration
+	after 'deploy:setup' do
+		# create symlink for document_root if it doesn't exists
+		documentRootExists = capture("if [ ! -e #{document_root} ]; then ln -sf #{current_path} #{document_root}; echo 'no'; fi").chomp
+
+		unless documentRootExists == 'no'
+			warn 'Warning: Document root (#{document_root}) already exists'
+			warn 'to link it to the Fork deploy issue the following command:'
+			warn '	ln -sf #{current_path} #{document_root}'
+		end
+	end
+
+	after 'deploy:update_code' do
+		# change the path to current_path
+		run "if [ -f #{shared_path}/app/config.php ]; then sed -i 's/#{version_dir}\\/[0-9]*/#{current_dir}/' #{shared_path}/app/config.php; fi"
+
+		# symlink the globals
+		run %{
+			ln -sf #{shared_path}/app/config.php #{release_path}/core/config.php
+		}
+	end
+
+rescue LoadError
+	$stderr.puts <<-INSTALL
+You need the forkcms_deploy gem (which simplifies this Capfile) to deploy this application
+Install the gem like this:
+	gem install forkcms_deploy
+				INSTALL
+	exit 1
+end
